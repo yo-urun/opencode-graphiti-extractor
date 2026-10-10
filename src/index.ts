@@ -5,6 +5,7 @@ import { Worker } from "./worker.ts";
 import { toTurns } from "./messages.ts";
 import { buildEpisode } from "./compact.ts";
 import { deterministicUuid, isoNow, sha16 } from "./util.ts";
+import { fileLog } from "./log.ts";
 
 /**
  * OpenCode V2 plugin: lightweight background memory extractor into an existing
@@ -19,14 +20,8 @@ export default {
   async setup(ctx: any) {
     const projectId = ctx?.location?.project?.id || sha16(String(ctx?.location?.directory ?? "default"));
     const cfg = resolveConfig(ctx?.options ?? {}, process.env ?? {}, projectId);
-    const log = (msg: string, meta?: any) => {
-      try {
-        // eslint-disable-next-line no-console
-        console.log(`[graphiti-extractor] ${msg}${meta ? " " + JSON.stringify(meta) : ""}`);
-      } catch {
-        /* ignore */
-      }
-    };
+    const log = (msg: string, meta?: any) => fileLog(`[graphiti-extractor] ${msg}${meta ? " " + JSON.stringify(meta) : ""}`);
+    log("setup", { projectId, group: cfg.groupId, url: cfg.graphitiUrl, debounceMs: cfg.debounceMs, minTurns: cfg.minTurns });
 
     if (!cfg.enabled) return;
 
@@ -43,7 +38,7 @@ export default {
       try {
         const messages = await ctx.session.context({ sessionID: sessionId });
         const turns = toTurns(messages);
-        if (!turns.length) return;
+        if (!turns.length) { log("capture skip: no turns", { sessionId }); return; }
 
         const cursor = await ctx.storage.get(cursorKey(sessionId));
         let fresh = turns;
@@ -51,10 +46,10 @@ export default {
           const idx = turns.findIndex((t) => t.id === cursor);
           fresh = idx >= 0 ? turns.slice(idx + 1) : turns.slice(-20);
         }
-        if (fresh.length < cfg.minTurns) return;
+        if (fresh.length < cfg.minTurns) { log("capture skip: minTurns", { sessionId, fresh: fresh.length }); return; }
 
         const { body, chars, firstTs } = buildEpisode(fresh, { maxChars: cfg.maxChars });
-        if (chars < cfg.minChars) return;
+        if (chars < cfg.minChars) { log("capture skip: minChars", { sessionId, chars }); return; }
 
         const seq = (Number(await ctx.storage.get(seqKey(sessionId))) || 0) + 1;
         const uuid = deterministicUuid(`oc:${cfg.projectId}:${sessionId}:${seq}`);
@@ -153,9 +148,13 @@ export default {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
           const type = event?.type ?? "";
-          const props: any = event?.properties ?? {};
-          const sid = props?.sessionID ?? props?.session_id ?? props?.session?.id;
-          if (type === "session.idle" && typeof sid === "string") schedule(sid);
+          const props: any = event?.properties ?? event?.data ?? {};
+          const sid = props?.sessionID ?? props?.session_id ?? props?.session?.id ?? event?.sessionID;
+          log("event", { type, eventKeys: Object.keys(event ?? {}).join(","), propKeys: Object.keys(props).join(","), sid: typeof sid === "string" ? sid : undefined });
+          if (type === "session.idle") {
+            if (typeof sid === "string") schedule(sid);
+            else log("idle without sessionID", { propKeys: Object.keys(props).join(",") });
+          }
           if (type === "session.deleted" && typeof sid === "string") {
             await ctx.storage.remove(cursorKey(sid)).catch(() => {});
             await ctx.storage.remove(seqKey(sid)).catch(() => {});
