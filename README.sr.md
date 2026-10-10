@@ -1,0 +1,125 @@
+# opencode-graphiti-extractor
+
+[English](README.md) · [Русский](README.ru.md) · **Srpski**
+
+**Lagani pozadinski ekstraktor memorije** za [OpenCode](https://opencode.ai)
+V2 coding agent koji upisuje razgovore u postojeći **Graphiti MCP** server
+(temporalni graf znanja). Namerno je minimalan: podrazumevano samo snimanje,
+grupisano, uz gotovo nikakav trošak u normalnom ciklusu agenta.
+
+> **Dolazi u** osnovnom paketu
+> [`yo-urun/ai-assistant`](https://github.com/yo-urun/ai-assistant)
+> (OpenCode V2 + Telegram bot + Graphiti/FalkorDB). Plugin možeš koristiti i
+> samostalno, sa bilo kojom OpenCode V2 + Graphiti postavkom.
+
+## Zašto
+
+Postojeći OpenCode↔Graphiti pluginovi rade samo na V1 (na OpenCode V2 se ne pokreću),
+a popularni je težak: blokira prvu poruku na pretrazi memorije i upisuje u Graphiti na
+**svakom** potezu asistenta, što dodaje kašnjenje i trošak tokena. Ovaj plugin radi
+suprotno.
+
+## Dizajn
+
+- **Bez ubacivanja u prompt podrazumevano** → nula dodatnih tokena/kašnjenja tokom rada.
+- **Grupisano snimanje po završetku poteza** (`session.execution.succeeded`, sa
+  debounce), a ne po poruci.
+- **Samo delta** (kursor po sesiji) → bez ponovnog čitanja/reindeksiranja istorije.
+- **Sažimanje + redakcija tajni** pre nego što bilo šta napusti uređaj.
+- **Trajni outbox** u skladištu plugina → preživljava restarte.
+- **Deterministički lokalni ID-jevi epizoda** i kursor po sesiji → idempotentno
+  snimanje; verifikacija spaja epizodu po njenom jedinstvenom `name`.
+- **Jedan tempirani radnik** (token bucket) + oportunistička verifikacija (po imenu).
+- **Saga po sesiji** za ispravan bitemporalni redosled.
+- Ručni `memory` alat za pretragu/dodavanje/status/redrive na zahtev.
+
+```
+event(session.execution.succeeded, debounced)
+  -> read new messages (ctx.session.context)
+  -> redact + compact into one episode body
+  -> durable outbox (uuid, saga, reference_time)
+  -> paced add_memory (fire-and-forget)
+  -> verify uuid against get_episodes
+```
+
+> Plugin piše mali log za nadzor u
+> `~/.config/opencode/graphiti-extractor.log` (setup, događaji, snimanja).
+
+## Alat `memory`
+
+| režim | argumenti | opis |
+|---|---|---|
+| `search` | `query` | semantička + grafovska pretraga po grupi |
+| `add` | `content` | odmah sačuvaj trajnu belešku |
+| `status` | — | brojači outbox-a + ciljna grupa/URL |
+| `redrive` | — | vrati iz dead-letter i pokreni obradu |
+
+## Instalacija (lokalni plugin)
+
+Dodaj ovaj direktorijum u `plugins` niz globalnog OpenCode konfiga (apsolutnom putanjom):
+
+```jsonc
+// ~/.config/opencode/opencode.json
+{
+  "plugins": ["/absolute/path/to/opencode-graphiti-extractor"]
+}
+```
+
+Opcije možeš proslediti u objektnom obliku:
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "/absolute/path/to/opencode-graphiti-extractor",
+      "options": {
+        "graphitiUrl": "http://localhost:8000/mcp?codemode=false",
+        "groupId": "opencode",
+        "debounceMs": 90000,
+        "minTurns": 3,
+        "maxChars": 18000,
+        "maxEpisodesPerMin": 6
+      }
+    }
+  ]
+}
+```
+
+## Konfiguracija
+
+| Opcija | Podrazumevano | Značenje |
+|---|---|---|
+| `graphitiUrl` | `http://localhost:8000/mcp?codemode=false` | Graphiti MCP endpoint |
+| `groupId` | `opencode` | grupa grafa znanja |
+| `debounceMs` | `90000` | pauza mirovanja pre slanja |
+| `minTurns` | `3` | preskoči razgovore kraće od ovoga |
+| `minChars` | `400` | preskoči epizode manje od ovoga |
+| `maxChars` | `18000` | ograničenje tela epizode |
+| `maxEpisodesPerMin` | `6` | tempiranje |
+| `maxAttempts` | `8` | pokušaji pre dead-letter |
+
+## Testovi
+
+```bash
+npm test
+```
+
+Unit testovi pokrivaju čiste delove (sažimanje/redakcija, deterministički id-jevi,
+state machine outbox-a, parsiranje MCP protokola). Mreža nije potrebna.
+
+## Napomene / ograničenja
+
+- Graphiti server izvlači entitete asinhrono i može biti spor ili ograničen po
+  frekvenciji; epizode se mogu pojaviti za nekoliko minuta. Zato je verifikacija
+  oportunistička, a ne trenutna.
+- Namenjen je da dopuni, a ne da zameni Graphiti-jevu serversku ekstrakciju.
+
+## Povezani repozitorijumi
+
+- **[yo-urun/ai-assistant](https://github.com/yo-urun/ai-assistant)** — self-hosted
+  osnovni paket AI asistenta (OpenCode V2 + Telegram bot + Graphiti/FalkorDB) koji
+  **uključuje ovaj plugin**.
+
+## Licenca
+
+MIT

@@ -1,5 +1,7 @@
 # opencode-graphiti-extractor
 
+**English** · [Русский](README.ru.md) · [Srpski](README.sr.md)
+
 A **lightweight background memory extractor** for the [OpenCode](https://opencode.ai)
 V2 coding agent that writes conversations into an existing **Graphiti MCP**
 server (temporal knowledge graph). It is deliberately minimal: capture-only by
