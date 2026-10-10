@@ -12,9 +12,177 @@ import { fileLog } from "./log.ts";
  * Graphiti MCP server. Capture-only by default (no prompt injection), batched on
  * session idle, with a durable outbox and deterministic episode IDs.
  *
- * The plugin intentionally has no runtime dependencies and uses the V2 plugin
- * context (events, session context, storage, tools).
+ * Lifecycle note: OpenCode loads the plugin once per project/location, and each
+ * instance receives the whole server event stream. Without a process-wide guard
+ * every instance would subscribe and process the same event N times. We therefore
+ * subscribe exactly once per process and always work from the latest setup's deps.
  */
+
+interface Deps {
+  ctx: any;
+  cfg: any;
+  log: (msg: string, meta?: any) => void;
+  client: GraphitiClient;
+  outbox: Outbox;
+  worker: Worker;
+  flushTimers: Map<string, any>;
+  capture: (sessionId: string) => Promise<void>;
+  schedule: (sessionId: string) => void;
+}
+
+interface Registry {
+  deps?: Deps;
+  controller?: AbortController;
+  subscribed: boolean;
+}
+
+// Survives plugin reloads within the same server process.
+const REGISTRY_KEY = "__graphitiExtractorV2";
+function registry(): Registry {
+  const g = globalThis as any;
+  return (g[REGISTRY_KEY] ??= { subscribed: false } as Registry);
+}
+
+const RELEVANT = new Set([
+  "session.idle",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.text.ended",
+  "session.renamed",
+  "session.deleted",
+]);
+const TRIGGERS = new Set(["session.idle", "session.execution.succeeded", "session.text.ended"]);
+
+function buildDeps(ctx: any, cfg: any, log: Deps["log"]): Deps {
+  const client = new GraphitiClient(cfg.graphitiUrl);
+  const outbox = new Outbox(ctx.storage);
+  const worker = new Worker({ client, outbox, log, maxPerMin: cfg.maxEpisodesPerMin, maxAttempts: cfg.maxAttempts });
+  const flushTimers = new Map<string, any>();
+
+  const cursorKey = (sid: string) => `cursor:${sid}`;
+  const seqKey = (sid: string) => `seq:${sid}`;
+  const sagaKey = (sid: string) => `saga:${sid}`;
+
+  async function capture(sessionId: string): Promise<void> {
+    try {
+      const messages = await ctx.session.context({ sessionID: sessionId });
+      const turns = toTurns(messages);
+      if (!turns.length) { log("capture skip: no turns", { sessionId }); return; }
+
+      const cursor = await ctx.storage.get(cursorKey(sessionId));
+      let fresh = turns;
+      if (typeof cursor === "string") {
+        const idx = turns.findIndex((t) => t.id === cursor);
+        fresh = idx >= 0 ? turns.slice(idx + 1) : turns.slice(-20);
+      }
+      if (fresh.length < cfg.minTurns) { log("capture skip: minTurns", { sessionId, fresh: fresh.length }); return; }
+
+      const { body, chars, firstTs } = buildEpisode(fresh, { maxChars: cfg.maxChars });
+      if (chars < cfg.minChars) { log("capture skip: minChars", { sessionId, chars }); return; }
+
+      const seq = (Number(await ctx.storage.get(seqKey(sessionId))) || 0) + 1;
+      // Identity is derived from the session, not the loading instance, so the
+      // same episode resolves to the same id regardless of which project/plugin
+      // instance captured it.
+      const uuid = deterministicUuid(`oc:${cfg.groupId}:${sessionId}:${seq}`);
+      const saga = `session:${sessionId}`;
+      const sagaPrevious = await ctx.storage.get(sagaKey(sessionId));
+
+      await outbox.put({
+        uuid,
+        groupId: cfg.groupId,
+        sessionId,
+        seq,
+        name: `opencode ${sessionId} #${seq}`,
+        body,
+        referenceTime: firstTs ?? isoNow(),
+        saga,
+        sagaPrevious: typeof sagaPrevious === "string" ? sagaPrevious : undefined,
+        state: "pending",
+        attempts: 0,
+        createdAt: isoNow(),
+        updatedAt: isoNow(),
+      });
+
+      const lastId = fresh[fresh.length - 1]?.id;
+      if (typeof lastId === "string") await ctx.storage.set(cursorKey(sessionId), lastId);
+      await ctx.storage.set(seqKey(sessionId), seq);
+      await ctx.storage.set(sagaKey(sessionId), uuid);
+      log("queued", { sessionId, uuid, chars });
+      void worker.drain();
+    } catch (e) {
+      log("capture failed", { sessionId, error: String(e).slice(0, 200) });
+    }
+  }
+
+  function schedule(sessionId: string): void {
+    const prev = flushTimers.get(sessionId);
+    if (prev) clearTimeout(prev);
+    flushTimers.set(
+      sessionId,
+      setTimeout(() => {
+        flushTimers.delete(sessionId);
+        void capture(sessionId);
+      }, cfg.debounceMs),
+    );
+  }
+
+  return { ctx, cfg, log, client, outbox, worker, flushTimers, capture, schedule };
+}
+
+function handleEvent(event: any): void {
+  const deps = registry().deps;
+  if (!deps) return;
+  const type = event?.type ?? "";
+  if (!RELEVANT.has(type)) return;
+  const data: any = event?.data ?? {};
+  const sid = data?.sessionID ?? data?.session_id ?? data?.session?.id ?? data?.id ?? event?.sessionID;
+  deps.log("event", { type, dataKeys: Object.keys(data).join(","), data: JSON.stringify(data).slice(0, 200), sid: typeof sid === "string" ? sid : undefined });
+  if (TRIGGERS.has(type) && typeof sid === "string") deps.schedule(sid);
+  if (type === "session.deleted" && typeof sid === "string") {
+    void Promise.allSettled([
+      deps.ctx.storage.remove(`cursor:${sid}`),
+      deps.ctx.storage.remove(`seq:${sid}`),
+      deps.ctx.storage.remove(`saga:${sid}`),
+    ]);
+  }
+}
+
+/**
+ * Start the single process-wide subscriber. Abort races each `next()` so the
+ * loop stops promptly even if the underlying stream ignores the signal.
+ */
+function startSubscriber(ctx: any): AbortController {
+  const reg = registry();
+  const controller = new AbortController();
+  reg.controller = controller;
+  reg.subscribed = true;
+
+  const iterate = async () => {
+    const iterator = (ctx.event.subscribe({ signal: controller.signal }) as AsyncIterable<any>)[Symbol.asyncIterator]();
+    const aborted = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+    try {
+      while (!controller.signal.aborted) {
+        const next = await Promise.race([iterator.next(), aborted]);
+        if (next.done) break;
+        handleEvent(next.value);
+      }
+    } catch {
+      /* aborted or stream ended */
+    } finally {
+      const r = registry();
+      if (r.controller === controller) {
+        r.subscribed = false;
+        r.controller = undefined;
+      }
+    }
+  };
+  void iterate();
+  return controller;
+}
+
 export default {
   id: "graphiti-extractor",
   async setup(ctx: any) {
@@ -25,77 +193,12 @@ export default {
 
     if (!cfg.enabled) return;
 
-    const client = new GraphitiClient(cfg.graphitiUrl);
-    const outbox = new Outbox(ctx.storage);
-    const worker = new Worker({ client, outbox, log, maxPerMin: cfg.maxEpisodesPerMin, maxAttempts: cfg.maxAttempts });
-    const flushTimers = new Map<string, any>();
+    const deps = buildDeps(ctx, cfg, log);
+    const reg = registry();
+    // Always point the single subscriber at the freshest config/context.
+    reg.deps = deps;
 
-    const cursorKey = (sid: string) => `cursor:${sid}`;
-    const seqKey = (sid: string) => `seq:${sid}`;
-    const sagaKey = (sid: string) => `saga:${sid}`;
-
-    async function capture(sessionId: string): Promise<void> {
-      try {
-        const messages = await ctx.session.context({ sessionID: sessionId });
-        const turns = toTurns(messages);
-        if (!turns.length) { log("capture skip: no turns", { sessionId }); return; }
-
-        const cursor = await ctx.storage.get(cursorKey(sessionId));
-        let fresh = turns;
-        if (typeof cursor === "string") {
-          const idx = turns.findIndex((t) => t.id === cursor);
-          fresh = idx >= 0 ? turns.slice(idx + 1) : turns.slice(-20);
-        }
-        if (fresh.length < cfg.minTurns) { log("capture skip: minTurns", { sessionId, fresh: fresh.length }); return; }
-
-        const { body, chars, firstTs } = buildEpisode(fresh, { maxChars: cfg.maxChars });
-        if (chars < cfg.minChars) { log("capture skip: minChars", { sessionId, chars }); return; }
-
-        const seq = (Number(await ctx.storage.get(seqKey(sessionId))) || 0) + 1;
-        const uuid = deterministicUuid(`oc:${cfg.projectId}:${sessionId}:${seq}`);
-        const saga = `session:${sessionId}`;
-        const sagaPrevious = await ctx.storage.get(sagaKey(sessionId));
-
-        await outbox.put({
-          uuid,
-          groupId: cfg.groupId,
-          sessionId,
-          seq,
-          name: `opencode ${sessionId} #${seq}`,
-          body,
-          referenceTime: firstTs ?? isoNow(),
-          saga,
-          sagaPrevious: typeof sagaPrevious === "string" ? sagaPrevious : undefined,
-          state: "pending",
-          attempts: 0,
-          createdAt: isoNow(),
-          updatedAt: isoNow(),
-        });
-
-        const lastId = fresh[fresh.length - 1]?.id;
-        if (typeof lastId === "string") await ctx.storage.set(cursorKey(sessionId), lastId);
-        await ctx.storage.set(seqKey(sessionId), seq);
-        await ctx.storage.set(sagaKey(sessionId), uuid);
-        log("queued", { sessionId, uuid, chars });
-        void worker.drain();
-      } catch (e) {
-        log("capture failed", { sessionId, error: String(e).slice(0, 200) });
-      }
-    }
-
-    function schedule(sessionId: string): void {
-      const prev = flushTimers.get(sessionId);
-      if (prev) clearTimeout(prev);
-      flushTimers.set(
-        sessionId,
-        setTimeout(() => {
-          flushTimers.delete(sessionId);
-          void capture(sessionId);
-        }, cfg.debounceMs),
-      );
-    }
-
-    // --- Register a manual memory tool (search / add) ---
+    // --- Manual memory tool (registered per instance so every location has it) ---
     try {
       await ctx.tool.transform((editor: any) => {
         editor.add({
@@ -162,44 +265,32 @@ export default {
       log("tool registration failed", { error: String(e).slice(0, 200) });
     }
 
-    // --- Subscribe to server events ---
-    const controller = new AbortController();
-    const RELEVANT = new Set([
-      "session.idle",
-      "session.execution.succeeded",
-      "session.execution.failed",
-      "session.text.ended",
-      "session.renamed",
-      "session.deleted",
-    ]);
-    const TRIGGERS = new Set(["session.idle", "session.execution.succeeded", "session.text.ended"]);
-    void (async () => {
-      try {
-        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-          const type = event?.type ?? "";
-          if (!RELEVANT.has(type)) continue;
-          const data: any = (event as any)?.data ?? {};
-          const sid = data?.sessionID ?? data?.session_id ?? data?.session?.id ?? data?.id ?? (event as any)?.sessionID;
-          log("event", { type, dataKeys: Object.keys(data).join(","), data: JSON.stringify(data).slice(0, 300), sid: typeof sid === "string" ? sid : undefined });
-          if (TRIGGERS.has(type) && typeof sid === "string") schedule(sid);
-          if (type === "session.deleted" && typeof sid === "string") {
-            await ctx.storage.remove(cursorKey(sid)).catch(() => {});
-            await ctx.storage.remove(seqKey(sid)).catch(() => {});
-            await ctx.storage.remove(sagaKey(sid)).catch(() => {});
-          }
-        }
-      } catch {
-        /* stream ended or aborted */
-      }
-    })();
+    // --- Subscribe exactly once per process (see lifecycle note above) ---
+    let ownsSubscription = false;
+    let controller: AbortController | undefined;
+    if (!reg.subscribed) {
+      ownsSubscription = true;
+      controller = startSubscriber(ctx);
+      log("subscriber started", { projectId });
+    } else {
+      log("setup: subscriber already running, reused", { projectId });
+    }
 
     // Startup: flush any durable leftovers from a previous run.
-    void worker.drain();
+    void deps.worker.drain();
 
     return () => {
-      controller.abort();
-      worker.stop();
-      for (const t of flushTimers.values()) clearTimeout(t);
+      // Stop this instance's worker and timers.
+      deps.worker.stop();
+      for (const t of deps.flushTimers.values()) clearTimeout(t);
+      // Only the setup that owns the subscription may tear it down; on reload
+      // OpenCode unloads before the next setup, which then re-subscribes.
+      const r = registry();
+      if (ownsSubscription && r.controller === controller) {
+        try { controller?.abort(); } catch { /* ignore */ }
+        r.controller = undefined;
+        r.subscribed = false;
+      }
     };
   },
 };

@@ -21,6 +21,8 @@ cost. This plugin does the opposite.
 ## Design
 
 - **No prompt injection by default** → zero added tokens/latency during work.
+- **One process-wide subscriber** → the plugin loads once per project/location,
+  but only a single instance listens, so each event is handled exactly once.
 - **Batched capture on turn completion** (`session.execution.succeeded`, debounced),
   not per message.
 - **Delta only** (cursor per session) → no re-reading/re-indexing the history.

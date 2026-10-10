@@ -64,7 +64,7 @@ export class GraphitiClient {
         params: {
           protocolVersion: "2025-06-18",
           capabilities: {},
-          clientInfo: { name: "opencode-graphiti-extractor", version: "0.2.0" },
+          clientInfo: { name: "opencode-graphiti-extractor", version: "0.2.1" },
         },
       },
       false,

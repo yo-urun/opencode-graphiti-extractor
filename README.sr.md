@@ -22,6 +22,8 @@ suprotno.
 ## Dizajn
 
 - **Bez ubacivanja u prompt podrazumevano** → nula dodatnih tokena/kašnjenja tokom rada.
+- **Jedan pretplatnik po procesu** → plugin se učitava po jedan po projektu/lokaciji,
+  ali sluša samo jedan, pa se svaki događaj obrađuje tačno jednom.
 - **Grupisano snimanje po završetku poteza** (`session.execution.succeeded`, sa
   debounce), a ne po poruci.
 - **Samo delta** (kursor po sesiji) → bez ponovnog čitanja/reindeksiranja istorije.
