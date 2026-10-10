@@ -86,6 +86,17 @@ Options can be passed with the object form:
 }
 ```
 
+### Install from npm
+
+The package is npm-ready. After publishing (see the `Publish to npm` workflow),
+reference it by name instead of a path:
+
+```jsonc
+{
+  "plugins": ["opencode-graphiti-extractor"]
+}
+```
+
 ## Configuration
 
 | Option | Default | Meaning |
@@ -98,6 +109,23 @@ Options can be passed with the object form:
 | `maxChars` | `18000` | episode body cap |
 | `maxEpisodesPerMin` | `6` | pacing |
 | `maxAttempts` | `8` | retries before dead-letter |
+
+## Demo
+
+```text
+# ~/.config/opencode/graphiti-extractor.log
+setup {"group":"opencode","url":"http://graphiti:8000/mcp?codemode=false"}
+subscriber started
+queued    {"sessionId":"ses_…","chars":1372}
+submitted {"name":"opencode ses_… #3","chars":1371}
+verified  {"name":"opencode ses_… #3"}
+```
+
+The agent can query memory on demand through the `memory` tool:
+
+```json
+{ "group": "opencode", "outbox": { "pending": 0, "submitted": 1, "verified": 14, "dead": 0 } }
+```
 
 ## Tests
 

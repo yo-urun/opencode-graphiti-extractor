@@ -88,6 +88,17 @@ event(session.execution.succeeded, debounced)
 }
 ```
 
+### Установка из npm
+
+Пакет готов к публикации в npm. После публикации (workflow `Publish to npm`)
+его можно указать по имени, а не по пути:
+
+```jsonc
+{
+  "plugins": ["opencode-graphiti-extractor"]
+}
+```
+
 ## Конфигурация
 
 | Опция | По умолчанию | Значение |
@@ -100,6 +111,23 @@ event(session.execution.succeeded, debounced)
 | `maxChars` | `18000` | лимит тела эпизода |
 | `maxEpisodesPerMin` | `6` | ограничение скорости |
 | `maxAttempts` | `8` | попытки до dead-letter |
+
+## Демо
+
+```text
+# ~/.config/opencode/graphiti-extractor.log
+setup {"group":"opencode","url":"http://graphiti:8000/mcp?codemode=false"}
+subscriber started
+queued    {"sessionId":"ses_…","chars":1372}
+submitted {"name":"opencode ses_… #3","chars":1371}
+verified  {"name":"opencode ses_… #3"}
+```
+
+Агент может обращаться к памяти по требованию через инструмент `memory`:
+
+```json
+{ "group": "opencode", "outbox": { "pending": 0, "submitted": 1, "verified": 14, "dead": 0 } }
+```
 
 ## Тесты
 

@@ -87,6 +87,17 @@ Opcije možeš proslediti u objektnom obliku:
 }
 ```
 
+### Instalacija sa npm-a
+
+Paket je spreman za npm. Posle objave (workflow `Publish to npm`) možeš ga
+navesti po imenu umesto putanje:
+
+```jsonc
+{
+  "plugins": ["opencode-graphiti-extractor"]
+}
+```
+
 ## Konfiguracija
 
 | Opcija | Podrazumevano | Značenje |
@@ -99,6 +110,23 @@ Opcije možeš proslediti u objektnom obliku:
 | `maxChars` | `18000` | ograničenje tela epizode |
 | `maxEpisodesPerMin` | `6` | tempiranje |
 | `maxAttempts` | `8` | pokušaji pre dead-letter |
+
+## Demo
+
+```text
+# ~/.config/opencode/graphiti-extractor.log
+setup {"group":"opencode","url":"http://graphiti:8000/mcp?codemode=false"}
+subscriber started
+queued    {"sessionId":"ses_…","chars":1372}
+submitted {"name":"opencode ses_… #3","chars":1371}
+verified  {"name":"opencode ses_… #3"}
+```
+
+Agent može da pretražuje memoriju na zahtev preko `memory` alata:
+
+```json
+{ "group": "opencode", "outbox": { "pending": 0, "submitted": 1, "verified": 14, "dead": 0 } }
+```
 
 ## Testovi
 

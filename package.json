@@ -1,14 +1,43 @@
 {
   "name": "opencode-graphiti-extractor",
-  "version": "0.2.1",
-  "private": true,
+  "version": "0.3.0",
+  "description": "Lightweight background memory extractor for the OpenCode V2 agent: writes conversations into a Graphiti MCP knowledge graph.",
   "type": "module",
-  "description": "Lightweight background memory extractor: OpenCode V2 -> Graphiti MCP (deterministic outbox + verification).",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yo-urun/opencode-graphiti-extractor.git"
+  },
+  "homepage": "https://github.com/yo-urun/opencode-graphiti-extractor",
+  "bugs": {
+    "url": "https://github.com/yo-urun/opencode-graphiti-extractor/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "graphiti",
+    "memory",
+    "knowledge-graph",
+    "ai-agent",
+    "mcp"
+  ],
   "engines": {
     "node": ">=22.18"
   },
+  "main": "./index.ts",
+  "exports": "./index.ts",
+  "files": [
+    "index.ts",
+    "src",
+    "README.md",
+    "README.ru.md",
+    "README.sr.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node --test"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
