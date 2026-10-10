@@ -5,6 +5,9 @@
   "type": "module",
   "description": "Lightweight background memory extractor: OpenCode V2 -> Graphiti MCP (deterministic outbox + verification).",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
     "test": "node --test"
   }

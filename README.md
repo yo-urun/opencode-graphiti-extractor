@@ -35,12 +35,12 @@ event(session.idle, debounced)
 
 ## Install (local plugin)
 
-Add this directory to the global OpenCode config `plugins` array:
+Add this directory to the global OpenCode config `plugins` array (use an absolute path):
 
 ```jsonc
 // ~/.config/opencode/opencode.json
 {
-  "plugins": ["C:/projects/opencode-graphiti-extractor"]
+  "plugins": ["/absolute/path/to/opencode-graphiti-extractor"]
 }
 ```
 
@@ -50,7 +50,7 @@ Options can be passed with the object form:
 {
   "plugins": [
     {
-      "package": "C:/projects/opencode-graphiti-extractor",
+      "package": "/absolute/path/to/opencode-graphiti-extractor",
       "options": {
         "graphitiUrl": "http://localhost:8000/mcp?codemode=false",
         "groupId": "opencode",
