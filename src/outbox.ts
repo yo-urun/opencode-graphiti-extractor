@@ -65,4 +65,10 @@ export class Outbox {
   async byState(state: OutboxState): Promise<OutboxItem[]> {
     return (await this.list()).filter((i) => i.state === state);
   }
+
+  async counts(): Promise<Record<OutboxState, number>> {
+    const counts: Record<OutboxState, number> = { pending: 0, submitted: 0, verified: 0, dead: 0 };
+    for (const i of await this.list()) counts[i.state] = (counts[i.state] ?? 0) + 1;
+    return counts;
+  }
 }

@@ -15,23 +15,36 @@ cost. This plugin does the opposite.
 ## Design
 
 - **No prompt injection by default** → zero added tokens/latency during work.
-- **Batched capture on `session.idle`** (debounced), not per message.
+- **Batched capture on turn completion** (`session.execution.succeeded`, debounced),
+  not per message.
 - **Delta only** (cursor per session) → no re-reading/re-indexing the history.
 - **Compaction + secret redaction** before anything leaves the machine.
 - **Durable outbox** in plugin storage → survives restarts.
 - **Deterministic UUIDs** per episode → idempotent, verifiable, deletable.
 - **One paced worker** (token bucket) + opportunistic verification.
 - **Per-session saga** for correct bi-temporal ordering.
-- Manual `memory` tool for on-demand search/add.
+- Manual `memory` tool for on-demand search/add/status/redrive.
 
 ```
-event(session.idle, debounced)
+event(session.execution.succeeded, debounced)
   -> read new messages (ctx.session.context)
   -> redact + compact into one episode body
   -> durable outbox (uuid, saga, reference_time)
   -> paced add_memory (fire-and-forget)
   -> verify uuid against get_episodes
 ```
+
+> The plugin writes a small observability log to
+> `~/.config/opencode/graphiti-extractor.log` (setup, events, captures).
+
+## `memory` tool
+
+| mode | args | description |
+|---|---|---|
+| `search` | `query` | semantic + graph search over the group |
+| `add` | `content` | store a durable note immediately |
+| `status` | — | outbox counts + target group/url |
+| `redrive` | — | requeue dead-lettered episodes and drain |
 
 ## Install (local plugin)
 

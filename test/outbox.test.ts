@@ -63,4 +63,9 @@ test("outbox put/list/get/remove and state filtering", async () => {
 
   await ob.remove("u2");
   assert.equal((await ob.list()).length, 1);
+
+  const counts = await ob.counts();
+  assert.equal(counts.verified, 1);
+  assert.equal(counts.pending, 0);
+  assert.equal(counts.dead, 0);
 });

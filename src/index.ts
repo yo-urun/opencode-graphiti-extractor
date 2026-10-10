@@ -104,7 +104,7 @@ export default {
           input: {
             type: "object",
             properties: {
-              mode: { type: "string", enum: ["search", "add"] },
+              mode: { type: "string", enum: ["search", "add", "status", "redrive"] },
               query: { type: "string" },
               content: { type: "string" },
             },
@@ -114,6 +114,24 @@ export default {
           options: { codemode: true },
           async execute(input: any) {
             try {
+              if (input.mode === "status") {
+                const counts = await outbox.counts();
+                return { content: JSON.stringify({ group: cfg.groupId, url: cfg.graphitiUrl, outbox: counts }) };
+              }
+              if (input.mode === "redrive") {
+                const items = await outbox.list();
+                let n = 0;
+                for (const it of items) {
+                  if (it.state === "dead") {
+                    it.state = "pending";
+                    it.attempts = 0;
+                    await outbox.put(it);
+                    n += 1;
+                  }
+                }
+                void worker.drain();
+                return { content: `requeued ${n} dead item(s)` };
+              }
               if (input.mode === "search") {
                 const facts = await client.searchFacts(String(input.query ?? ""), [cfg.groupId], 10);
                 const nodes = await client.searchNodes(String(input.query ?? ""), [cfg.groupId], 10);
@@ -144,17 +162,24 @@ export default {
 
     // --- Subscribe to server events ---
     const controller = new AbortController();
+    const RELEVANT = new Set([
+      "session.idle",
+      "session.execution.succeeded",
+      "session.execution.failed",
+      "session.text.ended",
+      "session.renamed",
+      "session.deleted",
+    ]);
+    const TRIGGERS = new Set(["session.idle", "session.execution.succeeded", "session.text.ended"]);
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
           const type = event?.type ?? "";
-          const props: any = event?.properties ?? event?.data ?? {};
-          const sid = props?.sessionID ?? props?.session_id ?? props?.session?.id ?? event?.sessionID;
-          log("event", { type, eventKeys: Object.keys(event ?? {}).join(","), propKeys: Object.keys(props).join(","), sid: typeof sid === "string" ? sid : undefined });
-          if (type === "session.idle") {
-            if (typeof sid === "string") schedule(sid);
-            else log("idle without sessionID", { propKeys: Object.keys(props).join(",") });
-          }
+          if (!RELEVANT.has(type)) continue;
+          const data: any = (event as any)?.data ?? {};
+          const sid = data?.sessionID ?? data?.session_id ?? data?.session?.id ?? data?.id ?? (event as any)?.sessionID;
+          log("event", { type, dataKeys: Object.keys(data).join(","), data: JSON.stringify(data).slice(0, 300), sid: typeof sid === "string" ? sid : undefined });
+          if (TRIGGERS.has(type) && typeof sid === "string") schedule(sid);
           if (type === "session.deleted" && typeof sid === "string") {
             await ctx.storage.remove(cursorKey(sid)).catch(() => {});
             await ctx.storage.remove(seqKey(sid)).catch(() => {});
