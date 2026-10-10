@@ -1,0 +1,179 @@
+import { resolveConfig } from "./config.ts";
+import { GraphitiClient } from "./graphiti.ts";
+import { Outbox } from "./outbox.ts";
+import { Worker } from "./worker.ts";
+import { toTurns } from "./messages.ts";
+import { buildEpisode } from "./compact.ts";
+import { deterministicUuid, isoNow, sha16 } from "./util.ts";
+
+/**
+ * OpenCode V2 plugin: lightweight background memory extractor into an existing
+ * Graphiti MCP server. Capture-only by default (no prompt injection), batched on
+ * session idle, with a durable outbox and deterministic episode IDs.
+ *
+ * The plugin intentionally has no runtime dependencies and uses the V2 plugin
+ * context (events, session context, storage, tools).
+ */
+export default {
+  id: "graphiti-extractor",
+  async setup(ctx: any) {
+    const projectId = ctx?.location?.project?.id || sha16(String(ctx?.location?.directory ?? "default"));
+    const cfg = resolveConfig(ctx?.options ?? {}, process.env ?? {}, projectId);
+    const log = (msg: string, meta?: any) => {
+      try {
+        // eslint-disable-next-line no-console
+        console.log(`[graphiti-extractor] ${msg}${meta ? " " + JSON.stringify(meta) : ""}`);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    if (!cfg.enabled) return;
+
+    const client = new GraphitiClient(cfg.graphitiUrl);
+    const outbox = new Outbox(ctx.storage);
+    const worker = new Worker({ client, outbox, log, maxPerMin: cfg.maxEpisodesPerMin, maxAttempts: cfg.maxAttempts });
+    const flushTimers = new Map<string, any>();
+
+    const cursorKey = (sid: string) => `cursor:${sid}`;
+    const seqKey = (sid: string) => `seq:${sid}`;
+    const sagaKey = (sid: string) => `saga:${sid}`;
+
+    async function capture(sessionId: string): Promise<void> {
+      try {
+        const messages = await ctx.session.context({ sessionID: sessionId });
+        const turns = toTurns(messages);
+        if (!turns.length) return;
+
+        const cursor = await ctx.storage.get(cursorKey(sessionId));
+        let fresh = turns;
+        if (typeof cursor === "string") {
+          const idx = turns.findIndex((t) => t.id === cursor);
+          fresh = idx >= 0 ? turns.slice(idx + 1) : turns.slice(-20);
+        }
+        if (fresh.length < cfg.minTurns) return;
+
+        const { body, chars, firstTs } = buildEpisode(fresh, { maxChars: cfg.maxChars });
+        if (chars < cfg.minChars) return;
+
+        const seq = (Number(await ctx.storage.get(seqKey(sessionId))) || 0) + 1;
+        const uuid = deterministicUuid(`oc:${cfg.projectId}:${sessionId}:${seq}`);
+        const saga = `session:${sessionId}`;
+        const sagaPrevious = await ctx.storage.get(sagaKey(sessionId));
+
+        await outbox.put({
+          uuid,
+          groupId: cfg.groupId,
+          sessionId,
+          seq,
+          name: `opencode ${sessionId} #${seq}`,
+          body,
+          referenceTime: firstTs ?? isoNow(),
+          saga,
+          sagaPrevious: typeof sagaPrevious === "string" ? sagaPrevious : undefined,
+          state: "pending",
+          attempts: 0,
+          createdAt: isoNow(),
+          updatedAt: isoNow(),
+        });
+
+        const lastId = fresh[fresh.length - 1]?.id;
+        if (typeof lastId === "string") await ctx.storage.set(cursorKey(sessionId), lastId);
+        await ctx.storage.set(seqKey(sessionId), seq);
+        await ctx.storage.set(sagaKey(sessionId), uuid);
+        log("queued", { sessionId, uuid, chars });
+        void worker.drain();
+      } catch (e) {
+        log("capture failed", { sessionId, error: String(e).slice(0, 200) });
+      }
+    }
+
+    function schedule(sessionId: string): void {
+      const prev = flushTimers.get(sessionId);
+      if (prev) clearTimeout(prev);
+      flushTimers.set(
+        sessionId,
+        setTimeout(() => {
+          flushTimers.delete(sessionId);
+          void capture(sessionId);
+        }, cfg.debounceMs),
+      );
+    }
+
+    // --- Register a manual memory tool (search / add) ---
+    try {
+      await ctx.tool.transform((editor: any) => {
+        editor.add({
+          name: "memory",
+          description: "Long-term memory (Graphiti). Search past facts or store a durable note. Use it when the user asks to recall or remember something.",
+          input: {
+            type: "object",
+            properties: {
+              mode: { type: "string", enum: ["search", "add"] },
+              query: { type: "string" },
+              content: { type: "string" },
+            },
+            required: ["mode"],
+            additionalProperties: false,
+          },
+          options: { codemode: true },
+          async execute(input: any) {
+            try {
+              if (input.mode === "search") {
+                const facts = await client.searchFacts(String(input.query ?? ""), [cfg.groupId], 10);
+                const nodes = await client.searchNodes(String(input.query ?? ""), [cfg.groupId], 10);
+                return { content: JSON.stringify({ facts, nodes }).slice(0, 4000) };
+              }
+              if (input.mode === "add") {
+                const uuid = deterministicUuid(`manual:${cfg.groupId}:${Date.now()}:${Math.random()}`);
+                await client.addMemory({
+                  name: "manual memory",
+                  episode_body: String(input.content ?? ""),
+                  group_id: cfg.groupId,
+                  source: "text",
+                  source_description: "manual memory tool",
+                  uuid,
+                });
+                return { content: "queued for processing" };
+              }
+              return { content: "unknown mode" };
+            } catch (e) {
+              return { content: `memory tool error: ${String(e).slice(0, 300)}` };
+            }
+          },
+        });
+      });
+    } catch (e) {
+      log("tool registration failed", { error: String(e).slice(0, 200) });
+    }
+
+    // --- Subscribe to server events ---
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          const type = event?.type ?? "";
+          const props: any = event?.properties ?? {};
+          const sid = props?.sessionID ?? props?.session_id ?? props?.session?.id;
+          if (type === "session.idle" && typeof sid === "string") schedule(sid);
+          if (type === "session.deleted" && typeof sid === "string") {
+            await ctx.storage.remove(cursorKey(sid)).catch(() => {});
+            await ctx.storage.remove(seqKey(sid)).catch(() => {});
+            await ctx.storage.remove(sagaKey(sid)).catch(() => {});
+          }
+        }
+      } catch {
+        /* stream ended or aborted */
+      }
+    })();
+
+    // Startup: flush any durable leftovers from a previous run.
+    void worker.drain();
+
+    return () => {
+      controller.abort();
+      worker.stop();
+      for (const t of flushTimers.values()) clearTimeout(t);
+    };
+  },
+};

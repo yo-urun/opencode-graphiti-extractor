@@ -1,0 +1,11 @@
+{
+  "name": "opencode-graphiti-extractor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Lightweight background memory extractor: OpenCode V2 -> Graphiti MCP (deterministic outbox + verification).",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}
