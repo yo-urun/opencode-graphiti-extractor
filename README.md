@@ -53,6 +53,9 @@ event(session.execution.succeeded, debounced)
 | `search` | `query` | semantic + graph search over the group |
 | `add` | `content` | store a durable note immediately |
 | `status` | — | outbox counts + target group/url |
+| `stats` | — | episode count + outbox counts + active settings |
+| `organize` | — | rebuild community clusters now (`build_communities`) |
+| `saga` | `saga` | summarize a saga by name (`summarize_saga`) |
 | `redrive` | — | requeue dead-lettered episodes and drain |
 
 ## Install (local plugin)
@@ -109,6 +112,14 @@ reference it by name instead of a path:
 | `maxChars` | `18000` | episode body cap |
 | `maxEpisodesPerMin` | `6` | pacing |
 | `maxAttempts` | `8` | retries before dead-letter |
+| `updateCommunities` | `false` | pass `update_communities` to Graphiti on ingest (incremental clusters) |
+| `organizeEveryHours` | `0` | rebuild community clusters every N hours (`build_communities`); `0` disables |
+| `sagaScope` | `session` | `session` = one saga per session; `project` = one shared saga per project |
+| `extractionInstructions` | `""` | extra `custom_extraction_instructions` to keep entity/edge naming canonical |
+
+Environment variables map 1:1: `GRAPHITI_UPDATE_COMMUNITIES`,
+`GRAPHITI_ORGANIZE_EVERY_HOURS`, `GRAPHITI_SAGA_SCOPE`,
+`GRAPHITI_EXTRACTION_INSTRUCTIONS` (plus `GRAPHITI_URL`, `GRAPHITI_GROUP_ID`).
 
 ## Demo
 

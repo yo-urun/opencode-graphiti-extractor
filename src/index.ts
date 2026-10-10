@@ -56,12 +56,23 @@ const TRIGGERS = new Set(["session.idle", "session.execution.succeeded", "sessio
 function buildDeps(ctx: any, cfg: any, log: Deps["log"]): Deps {
   const client = new GraphitiClient(cfg.graphitiUrl);
   const outbox = new Outbox(ctx.storage);
-  const worker = new Worker({ client, outbox, log, maxPerMin: cfg.maxEpisodesPerMin, maxAttempts: cfg.maxAttempts });
+  const worker = new Worker({
+    client,
+    outbox,
+    log,
+    groupId: cfg.groupId,
+    maxPerMin: cfg.maxEpisodesPerMin,
+    maxAttempts: cfg.maxAttempts,
+    updateCommunities: cfg.updateCommunities,
+    extractionInstructions: cfg.extractionInstructions,
+  });
   const flushTimers = new Map<string, any>();
 
   const cursorKey = (sid: string) => `cursor:${sid}`;
   const seqKey = (sid: string) => `seq:${sid}`;
-  const sagaKey = (sid: string) => `saga:${sid}`;
+  // Saga scope: one saga per session (default) or one shared saga per project.
+  const sagaName = (sid: string) => (cfg.sagaScope === "project" ? `project:${cfg.projectId}` : `session:${sid}`);
+  const sagaPrevKey = (sid: string) => `saga-prev:${sagaName(sid)}`;
 
   async function capture(sessionId: string): Promise<void> {
     try {
@@ -85,8 +96,8 @@ function buildDeps(ctx: any, cfg: any, log: Deps["log"]): Deps {
       // same episode resolves to the same id regardless of which project/plugin
       // instance captured it.
       const uuid = deterministicUuid(`oc:${cfg.groupId}:${sessionId}:${seq}`);
-      const saga = `session:${sessionId}`;
-      const sagaPrevious = await ctx.storage.get(sagaKey(sessionId));
+      const saga = sagaName(sessionId);
+      const sagaPrevious = await ctx.storage.get(sagaPrevKey(sessionId));
 
       await outbox.put({
         uuid,
@@ -107,7 +118,7 @@ function buildDeps(ctx: any, cfg: any, log: Deps["log"]): Deps {
       const lastId = fresh[fresh.length - 1]?.id;
       if (typeof lastId === "string") await ctx.storage.set(cursorKey(sessionId), lastId);
       await ctx.storage.set(seqKey(sessionId), seq);
-      await ctx.storage.set(sagaKey(sessionId), uuid);
+      await ctx.storage.set(sagaPrevKey(sessionId), uuid);
       log("queued", { sessionId, uuid, chars });
       void worker.drain();
     } catch (e) {
@@ -140,11 +151,16 @@ function handleEvent(event: any): void {
   deps.log("event", { type, dataKeys: Object.keys(data).join(","), data: JSON.stringify(data).slice(0, 200), sid: typeof sid === "string" ? sid : undefined });
   if (TRIGGERS.has(type) && typeof sid === "string") deps.schedule(sid);
   if (type === "session.deleted" && typeof sid === "string") {
-    void Promise.allSettled([
+    const removals = [
       deps.ctx.storage.remove(`cursor:${sid}`),
       deps.ctx.storage.remove(`seq:${sid}`),
-      deps.ctx.storage.remove(`saga:${sid}`),
-    ]);
+    ];
+    // Only the per-session saga chain is session-scoped; a project saga must
+    // survive an individual session deletion to keep its ordering intact.
+    if (deps.cfg.sagaScope !== "project") {
+      removals.push(deps.ctx.storage.remove(`saga-prev:session:${sid}`));
+    }
+    void Promise.allSettled(removals);
   }
 }
 
@@ -189,7 +205,7 @@ export default {
     const projectId = ctx?.location?.project?.id || sha16(String(ctx?.location?.directory ?? "default"));
     const cfg = resolveConfig(ctx?.options ?? {}, process.env ?? {}, projectId);
     const log = (msg: string, meta?: any) => fileLog(`[graphiti-extractor] ${msg}${meta ? " " + JSON.stringify(meta) : ""}`);
-    log("setup", { projectId, group: cfg.groupId, url: cfg.graphitiUrl, debounceMs: cfg.debounceMs, minTurns: cfg.minTurns });
+    log("setup", { projectId, group: cfg.groupId, url: cfg.graphitiUrl, debounceMs: cfg.debounceMs, minTurns: cfg.minTurns, sagaScope: cfg.sagaScope, updateCommunities: cfg.updateCommunities, organizeEveryHours: cfg.organizeEveryHours });
 
     if (!cfg.enabled) return;
 
@@ -203,23 +219,49 @@ export default {
       await ctx.tool.transform((editor: any) => {
         editor.add({
           name: "memory",
-          description: "Long-term memory (Graphiti). Search past facts or store a durable note. Use it when the user asks to recall or remember something.",
+          description: "Long-term memory (Graphiti). Search/add facts, inspect status, redrive the queue, rebuild clusters (organize), summarize a saga, or show stats.",
           input: {
             type: "object",
             properties: {
-              mode: { type: "string", enum: ["search", "add", "status", "redrive"] },
+              mode: { type: "string", enum: ["search", "add", "status", "redrive", "organize", "saga", "stats"] },
               query: { type: "string" },
               content: { type: "string" },
+              saga: { type: "string" },
             },
             required: ["mode"],
             additionalProperties: false,
           },
           options: { codemode: true },
           async execute(input: any) {
+            // IMPORTANT: in Code Mode the tool body is serialized and runs without
+            // the setup() closure. Resolve dependencies from the process-wide
+            // registry instead of captured lexicals (outbox/client/worker/cfg).
+            const d = registry().deps;
+            if (!d) return { content: "memory tool error: extractor not initialized" };
+            const { outbox, worker, client, cfg } = d;
             try {
               if (input.mode === "status") {
                 const counts = await outbox.counts();
-                return { content: JSON.stringify({ group: cfg.groupId, url: cfg.graphitiUrl, outbox: counts }) };
+                return { content: JSON.stringify({ group: cfg.groupId, url: cfg.graphitiUrl, sagaScope: cfg.sagaScope, outbox: counts }) };
+              }
+              if (input.mode === "stats") {
+                const counts = await outbox.counts();
+                let episodes = 0;
+                try {
+                  const res = await client.getEpisodes([cfg.groupId], 200);
+                  episodes = (res?.episodes ?? []).length;
+                } catch { /* ignore */ }
+                return { content: JSON.stringify({ group: cfg.groupId, episodes, sagaScope: cfg.sagaScope, updateCommunities: cfg.updateCommunities, outbox: counts }) };
+              }
+              if (input.mode === "organize") {
+                const r = await worker.organize();
+                return { content: JSON.stringify(r).slice(0, 2000) };
+              }
+              if (input.mode === "saga") {
+                const name = String(input.saga ?? input.query ?? "").trim();
+                if (!name) return { content: "mode=saga requires 'saga' (or 'query') with the saga name" };
+                const r = await client.summarizeSaga(name, cfg.groupId);
+                return { content: JSON.stringify(r).slice(0, 4000) };
               }
               if (input.mode === "redrive") {
                 await worker.verify();
@@ -245,12 +287,16 @@ export default {
                 return { content: JSON.stringify({ facts, nodes }).slice(0, 4000) };
               }
               if (input.mode === "add") {
+                const extra: Record<string, any> = {};
+                if (cfg.extractionInstructions) extra.custom_extraction_instructions = cfg.extractionInstructions;
                 await client.addMemory({
                   name: `manual ${Date.now()}`,
                   episode_body: String(input.content ?? ""),
                   group_id: cfg.groupId,
                   source: "text",
                   source_description: "manual memory tool",
+                  reference_time: new Date().toISOString(),
+                  ...extra,
                 });
                 return { content: "queued for processing" };
               }
@@ -279,9 +325,19 @@ export default {
     // Startup: flush any durable leftovers from a previous run.
     void deps.worker.drain();
 
+    // Periodic cluster rebuild — this is what makes memory "self-organize".
+    // 0 disables it (default for standalone use; the kit enables it via env).
+    let organizeTimer: any;
+    if (Number.isFinite(cfg.organizeEveryHours) && cfg.organizeEveryHours > 0) {
+      organizeTimer = setInterval(() => { void deps.worker.organize(); }, cfg.organizeEveryHours * 3600_000);
+      if (organizeTimer?.unref) organizeTimer.unref();
+      log("organize scheduled", { hours: cfg.organizeEveryHours });
+    }
+
     return () => {
       // Stop this instance's worker and timers.
       deps.worker.stop();
+      if (organizeTimer) clearInterval(organizeTimer);
       for (const t of deps.flushTimers.values()) clearTimeout(t);
       // Only the setup that owns the subscription may tear it down; on reload
       // OpenCode unloads before the next setup, which then re-subscribes.

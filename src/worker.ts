@@ -5,19 +5,26 @@ export interface WorkerDeps {
   client: GraphitiClient;
   outbox: Outbox;
   log: (msg: string, meta?: any) => void;
+  groupId: string;
   maxPerMin?: number;
   maxAttempts?: number;
+  updateCommunities?: boolean;
+  extractionInstructions?: string;
 }
 
 /**
  * Single paced worker per instance: submits pending episodes with a token bucket
  * (the Graphiti server serializes per group anyway), then opportunistically
  * verifies submitted ones against recent episodes.
+ *
+ * Besides the ingest path it also owns the "organize" maintenance task that
+ * rebuilds community (cluster) summaries over the group.
  */
 export class Worker {
   private deps: WorkerDeps;
   private running = false;
   private stopped = false;
+  private organizing = false;
   private stamps: number[] = [];
 
   constructor(deps: WorkerDeps) {
@@ -62,11 +69,21 @@ export class Worker {
       source_description: "opencode session",
       reference_time: item.referenceTime,
     };
+    // Bi-temporal ordering: keep episodes inside the same saga linked in order so
+    // Graphiti can summarize the evolving narrative (summarize_saga).
+    if (item.saga) args.saga = item.saga;
+    if (item.sagaPrevious) args.saga_previous_episode_uuid = item.sagaPrevious;
+    // Incremental clustering: let Graphiti fold the new episode into communities.
+    if (this.deps.updateCommunities) args.update_communities = true;
+    // Steer extraction so entity/edge naming stays canonical (tidier clusters).
+    if (this.deps.extractionInstructions) {
+      args.custom_extraction_instructions = this.deps.extractionInstructions;
+    }
     try {
       await this.deps.client.addMemory(args);
       item.state = "submitted";
       item.lastError = undefined;
-      this.deps.log("submitted", { name: item.name, chars: item.body.length });
+      this.deps.log("submitted", { name: item.name, chars: item.body.length, saga: item.saga });
     } catch (e) {
       item.attempts += 1;
       item.lastError = String(e).slice(0, 300);
@@ -101,6 +118,29 @@ export class Worker {
       } catch (e) {
         this.deps.log("verify failed", { groupId, error: String(e).slice(0, 200) });
       }
+    }
+  }
+
+  /**
+   * Maintenance: rebuild community (cluster) summaries for the group. Expensive
+   * on the Graphiti side (full-graph pass + LLM summary per community), so it is
+   * guarded against concurrent runs and scheduled by the caller.
+   */
+  async organize(): Promise<any> {
+    if (this.stopped || this.organizing) return { skipped: true };
+    this.organizing = true;
+    const started = Date.now();
+    try {
+      const res = await this.deps.client.buildCommunities([this.deps.groupId]);
+      const count = res?.community_count ?? res?.result?.community_count ?? "?";
+      const edges = res?.edge_count ?? res?.result?.edge_count ?? "?";
+      this.deps.log("organized", { group: this.deps.groupId, community_count: count, edge_count: edges, ms: Date.now() - started });
+      return res;
+    } catch (e) {
+      this.deps.log("organize failed", { group: this.deps.groupId, error: String(e).slice(0, 200) });
+      return { error: String(e).slice(0, 200) };
+    } finally {
+      this.organizing = false;
     }
   }
 }

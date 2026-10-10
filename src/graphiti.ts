@@ -64,7 +64,7 @@ export class GraphitiClient {
         params: {
           protocolVersion: "2025-06-18",
           capabilities: {},
-          clientInfo: { name: "opencode-graphiti-extractor", version: "0.3.0" },
+          clientInfo: { name: "opencode-graphiti-extractor", version: "0.4.0" },
         },
       },
       false,
@@ -106,5 +106,13 @@ export class GraphitiClient {
   }
   deleteEpisode(uuid: string, groupId?: string) {
     return this.callTool("delete_episode", groupId ? { uuid, group_id: groupId } : { uuid });
+  }
+  /** Rebuild community (cluster) summaries over the whole group. Expensive. */
+  buildCommunities(groupIds: string[]) {
+    return this.callTool("build_communities", { group_ids: groupIds });
+  }
+  /** Generate/refresh the running summary of a saga's episodes. */
+  summarizeSaga(sagaName: string, groupId: string) {
+    return this.callTool("summarize_saga", { saga_name: sagaName, group_id: groupId });
   }
 }

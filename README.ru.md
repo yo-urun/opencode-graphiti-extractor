@@ -55,6 +55,9 @@ event(session.execution.succeeded, debounced)
 | `search` | `query` | семантический + графовый поиск по группе |
 | `add` | `content` | сразу сохранить долговечную заметку |
 | `status` | — | счётчики outbox + целевая группа/URL |
+| `stats` | — | число эпизодов + outbox + активные настройки |
+| `organize` | — | перестроить кластеры сообществ сейчас (`build_communities`) |
+| `saga` | `saga` | саммари саги по имени (`summarize_saga`) |
 | `redrive` | — | вернуть из dead-letter и прогнать очередь |
 
 ## Установка (локальный плагин)
@@ -111,6 +114,14 @@ event(session.execution.succeeded, debounced)
 | `maxChars` | `18000` | лимит тела эпизода |
 | `maxEpisodesPerMin` | `6` | ограничение скорости |
 | `maxAttempts` | `8` | попытки до dead-letter |
+| `updateCommunities` | `false` | передавать `update_communities` в Graphiti при ingest (инкрементальные кластеры) |
+| `organizeEveryHours` | `0` | перестраивать кластеры каждые N часов (`build_communities`); `0` — выключено |
+| `sagaScope` | `session` | `session` — сага на сессию; `project` — общая сага проекта |
+| `extractionInstructions` | `""` | доп. `custom_extraction_instructions` для каноничных имён сущностей/связей |
+
+Переменные окружения совпадают 1:1: `GRAPHITI_UPDATE_COMMUNITIES`,
+`GRAPHITI_ORGANIZE_EVERY_HOURS`, `GRAPHITI_SAGA_SCOPE`,
+`GRAPHITI_EXTRACTION_INSTRUCTIONS` (плюс `GRAPHITI_URL`, `GRAPHITI_GROUP_ID`).
 
 ## Демо
 

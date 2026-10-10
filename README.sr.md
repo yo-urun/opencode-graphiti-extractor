@@ -54,6 +54,9 @@ event(session.execution.succeeded, debounced)
 | `search` | `query` | semantička + grafovska pretraga po grupi |
 | `add` | `content` | odmah sačuvaj trajnu belešku |
 | `status` | — | brojači outbox-a + ciljna grupa/URL |
+| `stats` | — | broj epizoda + outbox + aktivna podešavanja |
+| `organize` | — | rebuild klastera zajednica sada (`build_communities`) |
+| `saga` | `saga` | sažetak sage po imenu (`summarize_saga`) |
 | `redrive` | — | vrati iz dead-letter i pokreni obradu |
 
 ## Instalacija (lokalni plugin)
@@ -110,6 +113,14 @@ navesti po imenu umesto putanje:
 | `maxChars` | `18000` | ograničenje tela epizode |
 | `maxEpisodesPerMin` | `6` | tempiranje |
 | `maxAttempts` | `8` | pokušaji pre dead-letter |
+| `updateCommunities` | `false` | prosleđuje `update_communities` Graphiti-ju pri ingest-u (inkrementalni klasteri) |
+| `organizeEveryHours` | `0` | rebuild klastera svakih N sati (`build_communities`); `0` — isključeno |
+| `sagaScope` | `session` | `session` — saga po sesiji; `project` — zajednička saga projekta |
+| `extractionInstructions` | `""` | dodatne `custom_extraction_instructions` za kanonska imena entiteta/veza |
+
+Promenljive okruženja se poklapaju 1:1: `GRAPHITI_UPDATE_COMMUNITIES`,
+`GRAPHITI_ORGANIZE_EVERY_HOURS`, `GRAPHITI_SAGA_SCOPE`,
+`GRAPHITI_EXTRACTION_INSTRUCTIONS` (plus `GRAPHITI_URL`, `GRAPHITI_GROUP_ID`).
 
 ## Demo
 

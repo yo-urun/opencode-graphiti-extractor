@@ -1,6 +1,6 @@
 {
   "name": "opencode-graphiti-extractor",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Lightweight background memory extractor for the OpenCode V2 agent: writes conversations into a Graphiti MCP knowledge graph.",
   "type": "module",
   "license": "MIT",
