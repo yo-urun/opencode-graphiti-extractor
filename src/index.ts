@@ -119,10 +119,14 @@ export default {
                 return { content: JSON.stringify({ group: cfg.groupId, url: cfg.graphitiUrl, outbox: counts }) };
               }
               if (input.mode === "redrive") {
+                await worker.verify();
                 const items = await outbox.list();
+                const cutoff = Date.now() - 10 * 60 * 1000;
                 let n = 0;
                 for (const it of items) {
-                  if (it.state === "dead") {
+                  const age = Date.parse(it.updatedAt || it.createdAt || "1970-01-01T00:00:00Z");
+                  const stale = !Number.isFinite(age) || age < cutoff;
+                  if (it.state === "dead" || (it.state === "submitted" && stale)) {
                     it.state = "pending";
                     it.attempts = 0;
                     await outbox.put(it);
@@ -130,7 +134,7 @@ export default {
                   }
                 }
                 void worker.drain();
-                return { content: `requeued ${n} dead item(s)` };
+                return { content: `requeued ${n} item(s)` };
               }
               if (input.mode === "search") {
                 const facts = await client.searchFacts(String(input.query ?? ""), [cfg.groupId], 10);
