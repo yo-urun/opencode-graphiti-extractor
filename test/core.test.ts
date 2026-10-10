@@ -43,6 +43,20 @@ test("buildEpisode builds labeled body and honors maxChars", () => {
   assert.ok(capped.body.length <= 20);
 });
 
+test("toTurns parses the V2 message shape (type + content parts)", () => {
+  const messages = [
+    { id: "a1", type: "user", time: { created: 1700000000000 }, content: [{ type: "text", text: "hi there" }] },
+    { id: "a2", type: "assistant", time: { created: 1700000001000 }, content: [{ type: "reasoning", text: "thinking..." }, { type: "text", text: "hello" }, { type: "tool", text: "x" }] },
+  ];
+  const turns = toTurns(messages);
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].role, "user");
+  assert.equal(turns[0].id, "a1");
+  assert.equal(turns[1].role, "assistant");
+  assert.equal(turns[1].text, "hello");
+  assert.equal(turns[1].ts, new Date(1700000001000).toISOString());
+});
+
 test("toTurns ignores synthetic parts and non-conversation roles", () => {
   const messages = [
     { info: { role: "user", id: "m1" }, parts: [{ type: "text", text: "hi" }] },
