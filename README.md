@@ -20,8 +20,9 @@ cost. This plugin does the opposite.
 - **Delta only** (cursor per session) → no re-reading/re-indexing the history.
 - **Compaction + secret redaction** before anything leaves the machine.
 - **Durable outbox** in plugin storage → survives restarts.
-- **Deterministic UUIDs** per episode → idempotent, verifiable, deletable.
-- **One paced worker** (token bucket) + opportunistic verification.
+- **Deterministic local episode IDs** and a per-session cursor → idempotent
+  capture; verification matches the episode by its unique `name`.
+- **One paced worker** (token bucket) + opportunistic verification (by name).
 - **Per-session saga** for correct bi-temporal ordering.
 - Manual `memory` tool for on-demand search/add/status/redrive.
 

@@ -138,14 +138,12 @@ export default {
                 return { content: JSON.stringify({ facts, nodes }).slice(0, 4000) };
               }
               if (input.mode === "add") {
-                const uuid = deterministicUuid(`manual:${cfg.groupId}:${Date.now()}:${Math.random()}`);
                 await client.addMemory({
-                  name: "manual memory",
+                  name: `manual ${Date.now()}`,
                   episode_body: String(input.content ?? ""),
                   group_id: cfg.groupId,
                   source: "text",
                   source_description: "manual memory tool",
-                  uuid,
                 });
                 return { content: "queued for processing" };
               }

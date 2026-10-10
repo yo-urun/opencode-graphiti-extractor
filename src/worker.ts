@@ -60,21 +60,18 @@ export class Worker {
       group_id: item.groupId,
       source: "message",
       source_description: "opencode session",
-      uuid: item.uuid,
       reference_time: item.referenceTime,
-      saga: item.saga,
     };
-    if (item.sagaPrevious) args.saga_previous_episode_uuid = item.sagaPrevious;
     try {
       await this.deps.client.addMemory(args);
       item.state = "submitted";
       item.lastError = undefined;
-      this.deps.log("submitted", { uuid: item.uuid, chars: item.body.length });
+      this.deps.log("submitted", { name: item.name, chars: item.body.length });
     } catch (e) {
       item.attempts += 1;
       item.lastError = String(e).slice(0, 300);
       if (item.attempts >= (this.deps.maxAttempts ?? 8)) item.state = "dead";
-      this.deps.log("submit failed", { uuid: item.uuid, attempts: item.attempts, error: item.lastError });
+      this.deps.log("submit failed", { name: item.name, attempts: item.attempts, error: item.lastError });
     }
     await this.deps.outbox.put(item);
   }
@@ -91,12 +88,14 @@ export class Worker {
     for (const [groupId, items] of groups) {
       try {
         const res = await this.deps.client.getEpisodes([groupId], 100);
-        const known = new Set<string>(((res?.episodes ?? []) as any[]).map((e) => e.uuid));
+        const known = new Set<string>(
+          ((res?.episodes ?? []) as any[]).map((e) => e.name).filter((n) => typeof n === "string"),
+        );
         for (const it of items) {
-          if (known.has(it.uuid)) {
+          if (known.has(it.name)) {
             it.state = "verified";
             await this.deps.outbox.put(it);
-            this.deps.log("verified", { uuid: it.uuid });
+            this.deps.log("verified", { name: it.name });
           }
         }
       } catch (e) {
