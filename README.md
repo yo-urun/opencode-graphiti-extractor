@@ -5,6 +5,10 @@ V2 coding agent that writes conversations into an existing **Graphiti MCP**
 server (temporal knowledge graph). It is deliberately minimal: capture-only by
 default, batched, and with near-zero cost in the normal agent loop.
 
+> **Bundled in** the [`yo-urun/ai-assistant`](https://github.com/yo-urun/ai-assistant)
+> base kit (OpenCode V2 + Telegram bot + Graphiti/FalkorDB). You can also use
+> this plugin standalone with any OpenCode V2 + Graphiti setup.
+
 ## Why
 
 Existing OpenCode↔Graphiti plugins are V1-only (they do not run on OpenCode V2),
@@ -107,6 +111,12 @@ outbox state machine, MCP protocol parsing). No network required.
   therefore opportunistic, not instant.
 - This is designed to complement, not replace, Graphiti's own server-side
   extraction.
+
+## Related
+
+- **[yo-urun/ai-assistant](https://github.com/yo-urun/ai-assistant)** — self-hosted
+  AI-assistant base kit (OpenCode V2 + Telegram bot + Graphiti/FalkorDB) that
+  **bundles this plugin**.
 
 ## License
 
