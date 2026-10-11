@@ -4,7 +4,8 @@ import { Outbox } from "./outbox.ts";
 import { Worker } from "./worker.ts";
 import { toTurns } from "./messages.ts";
 import { buildEpisode } from "./compact.ts";
-import { deterministicUuid, isoNow, sha16 } from "./util.ts";
+import { deterministicUuid, isoNow, sha16, withTimeout } from "./util.ts";
+import { buildMemoryBlock, extractFactTexts, extractNodeTexts, latestUserKey, latestUserText } from "./recall.ts";
 import { fileLog } from "./log.ts";
 
 /**
@@ -26,8 +27,17 @@ interface Deps {
   outbox: Outbox;
   worker: Worker;
   flushTimers: Map<string, any>;
+  recallCache: Map<string, RecallEntry>;
+  runRecall: (messages: unknown) => Promise<string | null>;
   capture: (sessionId: string) => Promise<void>;
   schedule: (sessionId: string) => void;
+}
+
+interface RecallEntry {
+  /** Latest user-message key this entry was searched for (mode "turn"). */
+  key?: string;
+  /** null = searched but empty; undefined = not searched yet. */
+  block?: string | null;
 }
 
 interface Registry {
@@ -48,10 +58,11 @@ const RELEVANT = new Set([
   "session.execution.succeeded",
   "session.execution.failed",
   "session.text.ended",
+  "session.compacted",
   "session.renamed",
   "session.deleted",
 ]);
-const TRIGGERS = new Set(["session.idle", "session.execution.succeeded", "session.text.ended"]);
+const TRIGGERS = new Set(["session.idle", "session.execution.succeeded", "session.text.ended", "session.compacted"]);
 
 function buildDeps(ctx: any, cfg: any, log: Deps["log"]): Deps {
   const client = new GraphitiClient(cfg.graphitiUrl);
@@ -67,6 +78,27 @@ function buildDeps(ctx: any, cfg: any, log: Deps["log"]): Deps {
     extractionInstructions: cfg.extractionInstructions,
   });
   const flushTimers = new Map<string, any>();
+  const recallCache = new Map<string, RecallEntry>();
+
+  /**
+   * Search Graphiti for a compact recall block. Never throws and never blocks
+   * for longer than cfg.recallTimeoutMs, so an unavailable server cannot stall
+   * a model call.
+   */
+  async function runRecall(messages: unknown): Promise<string | null> {
+    const query =
+      latestUserText(messages) ||
+      (cfg.recall === "start" ? "user profile preferences projects decisions" : undefined);
+    if (!query) return null;
+    const budget = { maxFacts: cfg.recallMaxFacts, maxChars: cfg.recallMaxChars };
+    const [facts, nodes] = await Promise.allSettled([
+      withTimeout(client.searchFacts(query, [cfg.groupId], cfg.recallMaxFacts), cfg.recallTimeoutMs),
+      withTimeout(client.searchNodes(query, [cfg.groupId], cfg.recallMaxFacts), cfg.recallTimeoutMs),
+    ]);
+    const factTexts = facts.status === "fulfilled" ? extractFactTexts(facts.value) : [];
+    const nodeTexts = nodes.status === "fulfilled" ? extractNodeTexts(nodes.value) : [];
+    return buildMemoryBlock(factTexts, nodeTexts, budget) ?? null;
+  }
 
   const cursorKey = (sid: string) => `cursor:${sid}`;
   const seqKey = (sid: string) => `seq:${sid}`;
@@ -138,7 +170,7 @@ function buildDeps(ctx: any, cfg: any, log: Deps["log"]): Deps {
     );
   }
 
-  return { ctx, cfg, log, client, outbox, worker, flushTimers, capture, schedule };
+  return { ctx, cfg, log, client, outbox, worker, flushTimers, recallCache, runRecall, capture, schedule };
 }
 
 function handleEvent(event: any): void {
@@ -151,6 +183,7 @@ function handleEvent(event: any): void {
   deps.log("event", { type, dataKeys: Object.keys(data).join(","), data: JSON.stringify(data).slice(0, 200), sid: typeof sid === "string" ? sid : undefined });
   if (TRIGGERS.has(type) && typeof sid === "string") deps.schedule(sid);
   if (type === "session.deleted" && typeof sid === "string") {
+    deps.recallCache.delete(sid);
     const removals = [
       deps.ctx.storage.remove(`cursor:${sid}`),
       deps.ctx.storage.remove(`seq:${sid}`),
@@ -205,7 +238,7 @@ export default {
     const projectId = ctx?.location?.project?.id || sha16(String(ctx?.location?.directory ?? "default"));
     const cfg = resolveConfig(ctx?.options ?? {}, process.env ?? {}, projectId);
     const log = (msg: string, meta?: any) => fileLog(`[graphiti-extractor] ${msg}${meta ? " " + JSON.stringify(meta) : ""}`);
-    log("setup", { projectId, group: cfg.groupId, url: cfg.graphitiUrl, debounceMs: cfg.debounceMs, minTurns: cfg.minTurns, sagaScope: cfg.sagaScope, updateCommunities: cfg.updateCommunities, organizeEveryHours: cfg.organizeEveryHours });
+    log("setup", { projectId, group: cfg.groupId, url: cfg.graphitiUrl, debounceMs: cfg.debounceMs, minTurns: cfg.minTurns, sagaScope: cfg.sagaScope, updateCommunities: cfg.updateCommunities, organizeEveryHours: cfg.organizeEveryHours, recall: cfg.recall });
 
     if (!cfg.enabled) return;
 
@@ -311,6 +344,42 @@ export default {
       log("tool registration failed", { error: String(e).slice(0, 200) });
     }
 
+    // --- Opt-in recall: inject a small, budgeted memory block before model calls ---
+    // Off by default ("off") so the normal loop keeps zero added tokens/latency.
+    // Search runs against Graphiti with a hard timeout; failures are swallowed.
+    let recallRegistration: any;
+    if (cfg.recall !== "off") {
+      try {
+        recallRegistration = await ctx.session.hook("context", async (event: any) => {
+          try {
+            const sid = event?.sessionID ?? event?.session?.id ?? event?.session_id;
+            if (typeof sid !== "string" || !sid || !Array.isArray(event?.system)) return;
+            const messages = event?.messages;
+            const entry = deps.recallCache.get(sid) ?? {};
+            if (cfg.recall === "turn") {
+              const key = latestUserKey(messages);
+              if (key && key !== entry.key) {
+                entry.key = key;
+                entry.block = await deps.runRecall(messages);
+                deps.recallCache.set(sid, entry);
+              }
+            } else if (entry.block === undefined) {
+              entry.block = await deps.runRecall(messages);
+              deps.recallCache.set(sid, entry);
+            }
+            if (typeof entry.block === "string" && entry.block) {
+              event.system.push({ type: "text", text: entry.block });
+            }
+          } catch (e) {
+            log("recall failed", { error: String(e).slice(0, 200) });
+          }
+        });
+        log("recall hook registered", { mode: cfg.recall, maxFacts: cfg.recallMaxFacts, maxChars: cfg.recallMaxChars });
+      } catch (e) {
+        log("recall hook registration failed", { error: String(e).slice(0, 200) });
+      }
+    }
+
     // --- Subscribe exactly once per process (see lifecycle note above) ---
     let ownsSubscription = false;
     let controller: AbortController | undefined;
@@ -338,6 +407,7 @@ export default {
       // Stop this instance's worker and timers.
       deps.worker.stop();
       if (organizeTimer) clearInterval(organizeTimer);
+      if (recallRegistration?.dispose) void recallRegistration.dispose();
       for (const t of deps.flushTimers.values()) clearTimeout(t);
       // Only the setup that owns the subscription may tear it down; on reload
       // OpenCode unloads before the next setup, which then re-subscribes.

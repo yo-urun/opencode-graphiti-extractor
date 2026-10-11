@@ -14,14 +14,19 @@ grupisano, uz gotovo nikakav trošak u normalnom ciklusu agenta.
 
 ## Zašto
 
-Postojeći OpenCode↔Graphiti pluginovi rade samo na V1 (na OpenCode V2 se ne pokreću),
-a popularni je težak: blokira prvu poruku na pretrazi memorije i upisuje u Graphiti na
-**svakom** potezu asistenta, što dodaje kašnjenje i trošak tokena. Ovaj plugin radi
-suprotno.
+Kada je ovaj plugin nastao, postojeći OpenCode↔Graphiti pluginovi radili su samo na
+V1 (na OpenCode V2 se nisu pokretali) i bili teški: blokirali su prvu poruku na
+pretrazi memorije i upisivali u Graphiti na **svakom** potezu asistenta, što dodaje
+kašnjenje i trošak tokena. Sada postoje i V2-kompatibilne alternative, ali one i
+dalje ubacuju memoriju u svaki prompt. Ovaj plugin drži suprotan podrazumevani
+režim: snimanje je pozadinsko i grupisano, a recall je **isključen** dok ga ne
+uključiš.
 
 ## Dizajn
 
 - **Bez ubacivanja u prompt podrazumevano** → nula dodatnih tokena/kašnjenja tokom rada.
+- **Opcioni recall** (`recall: start|turn`) ubacuje mali blok memorije sa budžetom i
+  redakcijom tajni pre poziva modela; isključen — opet nula troška.
 - **Jedan pretplatnik po procesu** → plugin se učitava po jedan po projektu/lokaciji,
   ali sluša samo jedan, pa se svaki događaj obrađuje tačno jednom.
 - **Grupisano snimanje po završetku poteza** (`session.execution.succeeded`, sa
@@ -46,6 +51,25 @@ event(session.execution.succeeded, debounced)
 
 > Plugin piše mali log za nadzor u
 > `~/.config/opencode/graphiti-extractor.log` (setup, događaji, snimanja).
+
+## Recall (opciono)
+
+Snimanje je jedna polovina petlje. Postavi `recall` da ubaciš kompaktan blok
+memorije u kontekst modela pre svakog poziva (preko `ctx.session.hook("context")`):
+
+- `start` — jedna pretraga na početku sesije, blok se ponovo koristi;
+- `turn` — osveži pretragu na svaku novu korisničku poruku.
+
+Pretraga je ograničena sa `recallTimeoutMs` i nikada ne blokira poziv modela;
+greške i tajmauti se gutaju, pa nedostupan Graphiti ne može da zaustavi potez.
+Blok se dedupliče, rediguje od tajni i ograničava. Podrazumevano isključen.
+
+| opcija | podrazumevano | značenje |
+|---|---|---|
+| `recall` | `off` | `off` \| `start` \| `turn` |
+| `recallMaxFacts` | `5` | maksimum činjenica/entiteta u bloku |
+| `recallMaxChars` | `1200` | ograničenje dužine bloka |
+| `recallTimeoutMs` | `800` | tvrdi tajmaut pretrage |
 
 ## Alat `memory`
 
@@ -117,10 +141,16 @@ navesti po imenu umesto putanje:
 | `organizeEveryHours` | `0` | rebuild klastera svakih N sati (`build_communities`); `0` — isključeno |
 | `sagaScope` | `session` | `session` — saga po sesiji; `project` — zajednička saga projekta |
 | `extractionInstructions` | `""` | dodatne `custom_extraction_instructions` za kanonska imena entiteta/veza |
+| `recall` | `off` | ubaci memoriju pre poziva modela: `off` \| `start` \| `turn` |
+| `recallMaxFacts` | `5` | maksimum činjenica/entiteta u bloku |
+| `recallMaxChars` | `1200` | ograničenje dužine ubacenog bloka |
+| `recallTimeoutMs` | `800` | tvrdi tajmaut pretrage pri recall-u |
 
 Promenljive okruženja se poklapaju 1:1: `GRAPHITI_UPDATE_COMMUNITIES`,
 `GRAPHITI_ORGANIZE_EVERY_HOURS`, `GRAPHITI_SAGA_SCOPE`,
-`GRAPHITI_EXTRACTION_INSTRUCTIONS` (plus `GRAPHITI_URL`, `GRAPHITI_GROUP_ID`).
+`GRAPHITI_EXTRACTION_INSTRUCTIONS`, `GRAPHITI_RECALL`,
+`GRAPHITI_RECALL_MAX_FACTS`, `GRAPHITI_RECALL_MAX_CHARS`,
+`GRAPHITI_RECALL_TIMEOUT_MS` (plus `GRAPHITI_URL`, `GRAPHITI_GROUP_ID`).
 
 ## Demo
 

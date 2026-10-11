@@ -1,3 +1,11 @@
+/**
+ * Recall (memory injection into the model context) mode.
+ * - "off"   — capture only, zero added tokens/latency (default).
+ * - "start" — search once when a session begins and reuse the block.
+ * - "turn"  — refresh the search on every new user message.
+ */
+export type RecallMode = "off" | "start" | "turn";
+
 export interface ExtractorConfig {
   enabled: boolean;
   graphitiUrl: string;
@@ -9,6 +17,11 @@ export interface ExtractorConfig {
   maxChars: number;
   maxEpisodesPerMin: number;
   maxAttempts: number;
+  /** Opt-in long-term recall. "off" preserves the no-injection default. */
+  recall: RecallMode;
+  recallMaxFacts: number;
+  recallMaxChars: number;
+  recallTimeoutMs: number;
   /**
    * Ask Graphiti to incrementally refresh community summaries when an episode is
    * ingested (`update_communities`). Off by default because it adds latency/cost
@@ -37,6 +50,10 @@ type AnyRecord = Record<string, any>;
 
 const truthy = (v: unknown): boolean => v === true || v === "true" || v === "1" || v === 1;
 
+function parseRecall(v: unknown): RecallMode {
+  return v === "start" || v === "turn" ? v : "off";
+}
+
 export function resolveConfig(options: AnyRecord = {}, env: AnyRecord = {}, projectId = "default"): ExtractorConfig {
   const o = options ?? {};
   return {
@@ -50,6 +67,10 @@ export function resolveConfig(options: AnyRecord = {}, env: AnyRecord = {}, proj
     maxChars: Number(o.maxChars ?? 18000),
     maxEpisodesPerMin: Number(o.maxEpisodesPerMin ?? 6),
     maxAttempts: Number(o.maxAttempts ?? 8),
+    recall: parseRecall(o.recall ?? env.GRAPHITI_RECALL),
+    recallMaxFacts: Number(o.recallMaxFacts ?? env.GRAPHITI_RECALL_MAX_FACTS ?? 5),
+    recallMaxChars: Number(o.recallMaxChars ?? env.GRAPHITI_RECALL_MAX_CHARS ?? 1200),
+    recallTimeoutMs: Number(o.recallTimeoutMs ?? env.GRAPHITI_RECALL_TIMEOUT_MS ?? 800),
     updateCommunities: truthy(o.updateCommunities) || truthy(env.GRAPHITI_UPDATE_COMMUNITIES),
     extractionInstructions: String(o.extractionInstructions || env.GRAPHITI_EXTRACTION_INSTRUCTIONS || "").trim(),
     organizeEveryHours: Number(o.organizeEveryHours ?? env.GRAPHITI_ORGANIZE_EVERY_HOURS ?? 0),

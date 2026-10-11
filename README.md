@@ -13,14 +13,18 @@ default, batched, and with near-zero cost in the normal agent loop.
 
 ## Why
 
-Existing OpenCode↔Graphiti plugins are V1-only (they do not run on OpenCode V2),
-and the popular one is heavy: it blocks the first message on memory searches and
-writes to Graphiti on **every** assistant turn, which adds latency and token
-cost. This plugin does the opposite.
+When this plugin was written, the existing OpenCode↔Graphiti plugins were
+V1-only and heavy: they blocked the first message on memory searches and wrote
+to Graphiti on **every** assistant turn, which adds latency and token cost.
+V2-compatible alternatives exist now, but they still inject memory into every
+prompt. This plugin keeps the opposite default: capture is background and
+batched, and recall is **off** unless you turn it on.
 
 ## Design
 
 - **No prompt injection by default** → zero added tokens/latency during work.
+- **Opt-in recall** (`recall: start|turn`) injects a small, budgeted, redacted
+  memory block before model calls; still zero cost when off.
 - **One process-wide subscriber** → the plugin loads once per project/location,
   but only a single instance listens, so each event is handled exactly once.
 - **Batched capture on turn completion** (`session.execution.succeeded`, debounced),
@@ -42,6 +46,25 @@ event(session.execution.succeeded, debounced)
   -> paced add_memory (fire-and-forget)
   -> verify uuid against get_episodes
 ```
+
+## Recall (optional)
+
+Capture is one half of the loop. Set `recall` to inject a compact memory block
+into the model context before each call (via `ctx.session.hook("context")`):
+
+- `start` — search once when a session begins and reuse the block;
+- `turn` — refresh the search on every new user message.
+
+The search is bounded by `recallTimeoutMs` and never blocks the model call;
+errors and timeouts are swallowed, so an unavailable Graphiti cannot stall a
+turn. The block is deduplicated, secret-redacted, and capped. Off by default.
+
+| option | default | meaning |
+|---|---|---|
+| `recall` | `off` | `off` \| `start` \| `turn` |
+| `recallMaxFacts` | `5` | max facts/entities in the block |
+| `recallMaxChars` | `1200` | character budget for the block |
+| `recallTimeoutMs` | `800` | hard timeout for the Graphiti search |
 
 > The plugin writes a small observability log to
 > `~/.config/opencode/graphiti-extractor.log` (setup, events, captures).
@@ -116,10 +139,16 @@ reference it by name instead of a path:
 | `organizeEveryHours` | `0` | rebuild community clusters every N hours (`build_communities`); `0` disables |
 | `sagaScope` | `session` | `session` = one saga per session; `project` = one shared saga per project |
 | `extractionInstructions` | `""` | extra `custom_extraction_instructions` to keep entity/edge naming canonical |
+| `recall` | `off` | inject memory before model calls: `off` \| `start` \| `turn` |
+| `recallMaxFacts` | `5` | max facts/entities injected |
+| `recallMaxChars` | `1200` | character budget for the injected block |
+| `recallTimeoutMs` | `800` | hard timeout for the recall search |
 
 Environment variables map 1:1: `GRAPHITI_UPDATE_COMMUNITIES`,
 `GRAPHITI_ORGANIZE_EVERY_HOURS`, `GRAPHITI_SAGA_SCOPE`,
-`GRAPHITI_EXTRACTION_INSTRUCTIONS` (plus `GRAPHITI_URL`, `GRAPHITI_GROUP_ID`).
+`GRAPHITI_EXTRACTION_INSTRUCTIONS`, `GRAPHITI_RECALL`,
+`GRAPHITI_RECALL_MAX_FACTS`, `GRAPHITI_RECALL_MAX_CHARS`,
+`GRAPHITI_RECALL_TIMEOUT_MS` (plus `GRAPHITI_URL`, `GRAPHITI_GROUP_ID`).
 
 ## Demo
 

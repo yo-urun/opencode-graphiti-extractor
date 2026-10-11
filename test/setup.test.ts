@@ -12,7 +12,7 @@ const { default: plugin } = await import("../src/index.ts");
 const REGISTRY_KEY = "__graphitiExtractorV2";
 
 function makeCtx() {
-  const calls = { subscribe: 0, toolAdds: 0 };
+  const calls = { subscribe: 0, toolAdds: 0, hooks: [] as string[] };
   const store = new Map<string, any>();
   const storage = {
     async get(k: string) {
@@ -53,7 +53,15 @@ function makeCtx() {
         };
       },
     },
-    session: { async context() { return []; } },
+    session: {
+      async context() {
+        return [];
+      },
+      async hook(name: string) {
+        calls.hooks.push(name);
+        return { dispose: async () => {} };
+      },
+    },
   };
   return { ctx, calls };
 }
@@ -102,4 +110,19 @@ test("uuid identity is independent of the loading instance", async () => {
     deterministicUuid("oc:opencode:ses_abc:3"),
     deterministicUuid("oc:opencode:ses_abc:4"),
   );
+});
+
+test("recall hook registers only when enabled", async () => {
+  delete (globalThis as any)[REGISTRY_KEY];
+
+  const off = makeCtx();
+  await plugin.setup(off.ctx);
+  assert.deepEqual(off.calls.hooks, [], "off by default: no model hooks");
+
+  const on = makeCtx();
+  on.ctx.options = { recall: "turn" };
+  await plugin.setup(on.ctx);
+  assert.ok(on.calls.hooks.includes("context"), "context hook registered when recall is on");
+
+  delete (globalThis as any)[REGISTRY_KEY];
 });

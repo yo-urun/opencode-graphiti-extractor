@@ -24,3 +24,24 @@ export function sleep(ms: number): Promise<void> {
 export function isoNow(): string {
   return new Date().toISOString();
 }
+
+/**
+ * Resolve with the promise's value, or reject with a TimeoutError if `ms`
+ * elapses first. Used to keep optional recall from ever blocking a model call.
+ */
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms);
+    if (typeof (timer as any)?.unref === "function") (timer as any).unref();
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
