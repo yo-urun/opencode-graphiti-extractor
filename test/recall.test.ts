@@ -16,23 +16,23 @@ test("extractFactTexts handles wrapped results, .fact/.name and strings", () => 
 });
 
 test("extractNodeTexts handles names and drops empties", () => {
-  assert.deepEqual(extractNodeTexts({ nodes: [{ name: "Юрий" }, { name: "  " }, {}] }), ["Юрий"]);
-  assert.deepEqual(extractNodeTexts({ result: { nodes: [{ name: "takethe.space" }] } }), ["takethe.space"]);
+  assert.deepEqual(extractNodeTexts({ nodes: [{ name: "Anna" }, { name: "  " }, {}] }), ["Anna"]);
+  assert.deepEqual(extractNodeTexts({ result: { nodes: [{ name: "my-project" }] } }), ["my-project"]);
 });
 
 test("buildMemoryBlock dedupes, redacts, caps and returns undefined when empty", () => {
   assert.equal(buildMemoryBlock([], [], { maxFacts: 5, maxChars: 1200 }), undefined);
 
   const block = buildMemoryBlock(
-    ["Юрий работает над ai-assistant", "  юрий работает над ai-assistant  ", "token: sk-abcdefghijklmnopqrstuvwx"],
-    ["ai-assistant"],
+    ["Anna работает над my-project", "  anna работает над my-project  ", "token: sk-abcdefghijklmnopqrstuvwx"],
+    ["my-project"],
     { maxFacts: 10, maxChars: 2000 },
   );
   assert.ok(block);
   assert.match(block!, /^<graphiti-memory/);
   assert.match(block!, /<\/graphiti-memory>$/);
   // duplicate collapsed
-  assert.equal((block!.match(/Юрий работает над ai-assistant/g) ?? []).length, 1);
+  assert.equal((block!.match(/Anna работает над my-project/g) ?? []).length, 1);
   // secret redacted
   assert.doesNotMatch(block!, /sk-abcdefghijklmnopqrstuvwx/);
   assert.match(block!, /REDACTED/);

@@ -14,6 +14,7 @@ test("deterministicUuid is stable and uuid-shaped", () => {
 });
 
 test("redact removes common secrets", () => {
+  // Значения вымышленные: проверяем, что редакция секретов их убирает.
   const input = "key=sk-abcdefghijklmnopqrstuvwx token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ01 <private>hunter2</private>";
   const out = redact(input);
   assert.doesNotMatch(out, /sk-abcdefghijklmnopqrstuvwx/);
